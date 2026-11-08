@@ -1,0 +1,1 @@
+{"action":"created","issue":{"number":7,"title":"Add the sovereign marker","state":"open"},"comment":{"id":9001,"body":"@sovereign-bot add the marker line to hello.txt","user":{"login":"owner"}},"repository":{"full_name":"local/test-repo","clone_url":"CLONE_URL_HERE","default_branch":"main"}}

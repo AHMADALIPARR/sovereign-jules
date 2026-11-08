@@ -1,0 +1,1 @@
+{"action":"created","issue":{"number":8,"title":"Just a comment","state":"open"},"comment":{"id":9002,"body":"looks good to me","user":{"login":"owner"}},"repository":{"full_name":"local/test-repo","clone_url":"CLONE_URL_HERE","default_branch":"main"}}

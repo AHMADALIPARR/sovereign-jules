@@ -1,0 +1,20 @@
+# WATERMARK — file manifest
+
+SHA-256 per file; the chain head is the SHA-256 of the
+hash lines below, in order.
+
+```
+edc60e078aca783f2ff278e0cf38d845c1e8d4528a68e21eec5b8fb3e5a9bb96  Cargo.toml
+6f26b3c4a6017597ef0a302b31125dbb9848b77129d598b503ad33818acbf8a6  LICENSE
+34b9faebcfa23727cee5a27d1c400d37c0f7b92164f7ec5b31f35a57998fb909  README.md
+4adae845314a4da43923353cbb073171e896b710ecbfc7d15b693db39cc03970  STATUS.md
+52f5dbba5afc8bb797217c7859d25d38698350aa31a6a1209b02fd7bf942f66b  sovereign-jules.conf.example
+7c59374d70130995bee0f5f655aae8dbd7e2fcc1a24b4187dc66a31d893a309e  fixtures/issue_comment.json
+4cc74ea1dae74f4e353cbe47bd6f0567dbf5ddd98af752574dce63d4ce7c9f81  fixtures/no_trigger.json
+b2d413351268d803463e40bbc7f9c3c22383af16f90f41ff895c2668019bbdb2  fixtures/ping.json
+1136857d06931a8a19ce708ac94a2caa34e8fd98d42ad2d089a1ec3e3f4066da  src/main.rs
+62964a3aa56d6f92ba7e3ddfe62c2769accd00f2570e36484792e73c2704896f  test/run-tests.sh
+1769a525103b8c211f16edd79cf77c37cff31785023c71ffd15531b8f5511de1  test/stub_model.py
+```
+
+chain head: `b8ec3760d6192f9b95356198c75fcf79bb585a3aa7cba8e7814e028a5ba36ba0`

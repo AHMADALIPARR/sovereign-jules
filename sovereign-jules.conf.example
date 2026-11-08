@@ -1,0 +1,14 @@
+# Sovereign Jules — daemon config (key = value)
+port = 8787
+bot_name = sovereign-bot
+workdir = runs
+ledger_path = ledger.log
+# webhook_secret = (set to require X-Hub-Signature-256 HMAC)
+model_endpoint = http://127.0.0.1:11434/v1/chat/completions
+model_name = nemotron-super
+# discover_bin = /path/to/tool-discovery-engine/discover
+# discover_registry = /path/to/tool-discovery-engine/registry
+# test_cmd = make test
+git_name = Sovereign Jules
+git_email = bot@localhost
+gh_token_env = GH_TOKEN

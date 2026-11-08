@@ -1,6 +1,6 @@
 # STATUS
 
-## Verified in this workspace (test/run-tests.sh, 14/14)
+## Verified in this workspace (test/run-tests.sh, 18/18)
 
 - Blueprint step 1: a ping delivery returns HTTP 200.
 - Blueprint step 2: a trigger comment prints the extracted repo,
@@ -20,8 +20,26 @@
 - The run ledger chain verifies; the dashboard serves the Jules
   CSS with task cards rendered from the ledger.
 
+- The WebGPU backend's full loop also completes 18/18 with the
+  browser channel played by a stand-in client (the daemon cannot
+  distinguish it from the real page): job claimed from
+  /infer/next, result posted back, pipeline completed.
+- The edge worker is verified under Node with a captured fetch:
+  valid GitHub signature forwards a scrubbed body (installation
+  and sender objects dropped) re-signed for the daemon; a forged
+  signature gets 401 at the edge and is never forwarded.
+
 ## Limits
 
+- WebGPU inference itself — a real model generating in a real
+  browser — first runs on a GPU machine (bbqbaddie, RTX 3080, or
+  the Jetson). This VM has no GPU. What is verified here is the
+  complete interop channel the page speaks.
+- WebLLM runs MLC-format models. Sizing is physics: a dense 27B
+  at q4 needs roughly 16 GB of VRAM, past a 3080's 10/12 GB; the
+  7–14B q4 class fits comfortably, and low-bit (e.g. ternary)
+  27B-class weights fit where dense ones do not. The model id is
+  one config line (webllm_model).
 - The live GitHub loop (App installation, push to github.com,
   PR creation through the REST API) is code-complete but not
   exercised here: it needs the owner's GitHub App, his token in

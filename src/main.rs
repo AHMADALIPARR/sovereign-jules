@@ -186,6 +186,9 @@ struct Config {
     webhook_secret: String,
     model_endpoint: String,
     model_name: String,
+    model_backend: String,
+    webllm_model: String,
+    infer_timeout_secs: u64,
     discover_bin: String,
     discover_registry: String,
     test_cmd: String,
@@ -212,6 +215,9 @@ impl Config {
             webhook_secret: g("webhook_secret", ""),
             model_endpoint: g("model_endpoint", "http://127.0.0.1:11434/v1/chat/completions"),
             model_name: g("model_name", "nemotron-super"),
+            model_backend: g("model_backend", "http"),
+            webllm_model: g("webllm_model", "Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC"),
+            infer_timeout_secs: g("infer_timeout_secs", "900").parse().unwrap_or(900),
             discover_bin: g("discover_bin", ""),
             discover_registry: g("discover_registry", ""),
             test_cmd: g("test_cmd", ""),
@@ -324,7 +330,57 @@ struct Task {
     commenter: String,
     prompt: String,
 }
-struct Ctx { cfg: Config, ledger: Arc<Mutex<Ledger>> }
+struct Job {
+    system: String,
+    user: String,
+    claimed: bool,
+    slot: Arc<(Mutex<Option<Result<String, String>>>, std::sync::Condvar)>,
+}
+type Jobs = Arc<Mutex<std::collections::HashMap<String, Arc<Job>>>>;
+struct Ctx { cfg: Config, ledger: Arc<Mutex<Ledger>>, jobs: Jobs }
+
+/// One inference call, two backends. "http" posts to the configured
+/// OpenAI-shaped endpoint. "webllm" enqueues a job for the WebGPU
+/// page (webllm/infer.html, served at GET /infer) and waits: the
+/// model runs in a headless Chromium, on the GPU, via WebLLM —
+/// no Python, no CUDA, no external API.
+fn infer(ctx: &Ctx, task_id: &str, system: &str, user: &str) -> Result<String, String> {
+    let cfg = &ctx.cfg;
+    if cfg.model_backend == "webllm" {
+        let job_id = format!("{}-job", task_id);
+        let slot = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
+        {
+            let mut jobs = ctx.jobs.lock().unwrap();
+            jobs.insert(job_id.clone(), Arc::new(Job {
+                system: system.to_string(), user: user.to_string(),
+                claimed: false, slot: slot.clone(),
+            }));
+        }
+        let (lock, cvar) = &*slot;
+        let mut guard = lock.lock().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(cfg.infer_timeout_secs);
+        loop {
+            if let Some(r) = guard.take() {
+                ctx.jobs.lock().unwrap().remove(&job_id);
+                return r;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                ctx.jobs.lock().unwrap().remove(&job_id);
+                return Err(format!("webllm: no result within {}s (is the inference page open?)", cfg.infer_timeout_secs));
+            }
+            let (g, _) = cvar.wait_timeout(guard, deadline - now).unwrap();
+            guard = g;
+        }
+    }
+    let payload = format!(
+        "{{\"model\":\"{}\",\"messages\":[{{\"role\":\"system\",\"content\":\"{}\"}},{{\"role\":\"user\",\"content\":\"{}\"}}],\"temperature\":0}}",
+        json_escape(&cfg.model_name), json_escape(system), json_escape(user)
+    );
+    let reply = http_post(&cfg.model_endpoint, &payload, None)?;
+    json_object(&reply, "message").and_then(|m| json_str(m, "content")).or_else(|| json_str(&reply, "content"))
+        .ok_or_else(|| "model reply carried no message content".to_string())
+}
 fn seal(ctx: &Ctx, task: &str, stage: &str, detail: &str) {
     if let Ok(mut l) = ctx.ledger.lock() { l.append(task, stage, detail); }
     println!("[{}] {} — {}", task, stage, detail);
@@ -398,17 +454,9 @@ fn run_task(ctx: &Ctx, task: &Task) {
         "Task (from {} on {} #{} — {}):\n{}\n\nRepository files:\n{}\n\nTools discovered for this task (name, evidence tier):\n{}",
         task.commenter, task.repo_full, task.issue_number, task.issue_title, task.prompt, files, tools_block
     );
-    let payload = format!(
-        "{{\"model\":\"{}\",\"messages\":[{{\"role\":\"system\",\"content\":\"{}\"}},{{\"role\":\"user\",\"content\":\"{}\"}}],\"temperature\":0}}",
-        json_escape(&cfg.model_name), json_escape(system), json_escape(&user)
-    );
-    let reply = match http_post(&cfg.model_endpoint, &payload, None) {
-        Ok(r) => r,
+    let content = match infer(ctx, &task.id, &system, &user) {
+        Ok(c) => c,
         Err(e) => { seal(ctx, &task.id, "failed", &format!("model call: {}", e)); return; }
-    };
-    let content = match json_object(&reply, "message").and_then(|m| json_str(m, "content")).or_else(|| json_str(&reply, "content")) {
-        Some(c) => c,
-        None => { seal(ctx, &task.id, "failed", "model reply carried no message content"); return; }
     };
     seal(ctx, &task.id, "model_replied", &format!("reply sha256 {}", sha256_hex(&content)));
 
@@ -606,7 +654,7 @@ fn handle_webhook(ctx: &Ctx, headers: &HashMap<String, String>, body: &str) -> (
             };
             println!("task {} extracted: repo={} branch={} prompt={:?}", task.id, task.repo_full, task.default_branch, task.prompt);
             let tid = task.id.clone();
-            let ctx2 = Ctx { cfg: ctx.cfg.clone(), ledger: ctx.ledger.clone() };
+            let ctx2 = Ctx { cfg: ctx.cfg.clone(), ledger: ctx.ledger.clone(), jobs: ctx.jobs.clone() };
             std::thread::spawn(move || run_task(&ctx2, &task));
             (202, format!("{{\"task\":\"{}\"}}", tid))
         }
@@ -623,7 +671,7 @@ fn serve(ctx: Ctx) {
     println!("sovereign-jules listening on 127.0.0.1:{} — bot @{}", ctx.cfg.port, ctx.cfg.bot_name);
     for stream in listener.incoming() {
         let mut stream = match stream { Ok(s) => s, Err(_) => continue };
-        let ctx2 = Ctx { cfg: ctx.cfg.clone(), ledger: ctx.ledger.clone() };
+        let ctx2 = Ctx { cfg: ctx.cfg.clone(), ledger: ctx.ledger.clone(), jobs: ctx.jobs.clone() };
         std::thread::spawn(move || {
             let mut raw = Vec::new();
             let mut buf = [0u8; 8192];
@@ -659,7 +707,44 @@ fn serve(ctx: Ctx) {
             for line in lines {
                 if let Some((k, v)) = line.split_once(':') { headers.insert(k.trim().to_lowercase(), v.trim().to_string()); }
             }
-            let (code, payload, ctype) = if request_line.starts_with("GET /health") {
+            let (code, payload, ctype) = if request_line.starts_with("GET /infer/next") {
+                let mut found = None;
+                {
+                    let mut jobs = ctx2.jobs.lock().unwrap();
+                    let key = jobs.iter().find(|(_, j)| !j.claimed).map(|(k, _)| k.clone());
+                    if let Some(k) = key {
+                        let j = jobs.get(&k).unwrap();
+                        // claim it: rebuild the entry marked claimed
+                        let nj = Arc::new(Job { system: j.system.clone(), user: j.user.clone(), claimed: true, slot: j.slot.clone() });
+                        found = Some(format!("{{\"id\":\"{}\",\"system\":\"{}\",\"user\":\"{}\"}}",
+                            json_escape(&k), json_escape(&nj.system), json_escape(&nj.user)));
+                        jobs.insert(k, nj);
+                    }
+                }
+                match found {
+                    Some(p) => (200, p, "application/json"),
+                    None => (204, String::new(), "application/json"),
+                }
+            } else if request_line.starts_with("POST /infer/result") {
+                let id = json_str(&body, "id").unwrap_or_default();
+                let job = ctx2.jobs.lock().unwrap().get(&id).cloned();
+                match job {
+                    Some(j) => {
+                        let result = match json_str(&body, "error") {
+                            Some(e) => Err(format!("webllm page error: {}", e)),
+                            None => Ok(json_str(&body, "content").unwrap_or_default()),
+                        };
+                        let (lock, cvar) = &*j.slot;
+                        *lock.lock().unwrap() = Some(result);
+                        cvar.notify_all();
+                        (200, "{\"ok\":true}".to_string(), "application/json")
+                    }
+                    None => (404, "{\"error\":\"unknown job\"}".to_string(), "application/json"),
+                }
+            } else if request_line.starts_with("GET /infer ") || request_line.starts_with("GET /infer HTTP") {
+                let page = include_str!("../webllm/infer.html").replace("__WEBLLM_MODEL__", &ctx2.cfg.webllm_model);
+                (200, page, "text/html")
+            } else if request_line.starts_with("GET /health") {
                 (200, "ok".to_string(), "text/plain")
             } else if request_line.starts_with("GET / ") || request_line.starts_with("GET / HTTP") {
                 (200, render_dashboard(&ctx2.cfg.ledger_path), "text/html")
@@ -690,5 +775,6 @@ fn main() {
         return;
     }
     let ledger = Arc::new(Mutex::new(Ledger::open(&cfg.ledger_path)));
-    serve(Ctx { cfg, ledger });
+    let jobs: Jobs = Arc::new(Mutex::new(std::collections::HashMap::new()));
+    serve(Ctx { cfg, ledger, jobs });
 }

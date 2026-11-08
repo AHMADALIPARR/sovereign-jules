@@ -9,6 +9,30 @@ and a pull request — every stage sealed in a hash-chained run
 ledger, watched from a zero-dependency dashboard in the Jules
 dark-mode aesthetic.
 
+## Ingress — the edge route
+
+GitHub does not talk to the daemon directly. Deliveries land on
+`edge/worker.js`, a Cloudflare Worker that **verifies** GitHub's
+HMAC at the edge, **scrubs** the payload down to the fields the
+daemon reads (installation metadata, sender objects, and the rest
+of the tail are dropped at the edge, not at the house), and
+**forwards** the scrubbed body to the daemon re-signed with a
+daemon secret, so the daemon's own HMAC check verifies exactly
+what it receives. See `edge/wrangler.toml.example`.
+
+## The cognitive engine — WebGPU
+
+Two model backends, one seam (`model_backend`):
+
+- `http` — an OpenAI-shaped endpoint (local Ollama, an API).
+- `webllm` — a headless Chromium page served by the daemon at
+  `GET /infer` loads **WebLLM**, which runs the model through
+  **WebGPU** directly in VRAM: no Python, no CUDA, no external
+  API. The daemon hands the page jobs (`/infer/next`,
+  `/infer/result`) carrying the repository context and the task
+  text; the page returns the completion. The pipeline downstream
+  — apply, test gate, push, PR — is identical either way.
+
 ## The loop
 
 1. **Ingestion.** A GitHub App (Contents, Pull Requests, Issues:

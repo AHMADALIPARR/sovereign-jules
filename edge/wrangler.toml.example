@@ -1,0 +1,11 @@
+name = "sovereign-jules-edge"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+DAEMON_URL = "https://jules.example.com/webhook"
+
+# Secrets, set with: wrangler secret put WEBHOOK_SECRET
+#                    wrangler secret put DAEMON_SECRET
+# WEBHOOK_SECRET is the GitHub App's webhook secret.
+# DAEMON_SECRET is the daemon's webhook_secret in its config.

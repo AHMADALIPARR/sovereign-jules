@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sovereign Jules — WebGPU Inference</title>
+<style>
+:root {
+  --jules-bg: #0e1114;
+  --jules-surface: #1a1d21;
+  --jules-border: #2d3136;
+  --jules-primary: #8ab4f8; /* Google Labs Blue */
+  --jules-text-main: #e8eaed;
+  --jules-text-muted: #9aa0a6;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+body {
+  background-color: var(--jules-bg);
+  color: var(--jules-text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0;
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid var(--jules-border);
+  padding: 24px;
+  background-color: var(--jules-surface);
+}
+
+.task-card {
+  background-color: var(--jules-surface);
+  border: 1px solid var(--jules-border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+  transition: border-color 0.2s;
+}
+
+.task-card:hover {
+  border-color: var(--jules-primary);
+}
+
+.bot-comment {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--jules-text-muted);
+  background: #131518;
+  padding: 12px;
+  border-left: 3px solid var(--jules-primary);
+  border-radius: 4px;
+}
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <h2>WebGPU Inference</h2>
+  <p style="color:var(--jules-text-muted)">The cognitive engine. WebLLM runs the model in this
+  page, on the GPU, via WebGPU. The daemon feeds it repository context and the
+  task text; nothing leaves the machine.</p>
+  <p id="gpu" style="color:var(--jules-primary)">checking WebGPU…</p>
+</div>
+<main style="padding:24px;overflow:auto">
+  <div class="task-card">
+    <h3 id="model">model: __WEBLLM_MODEL__</h3>
+    <div class="bot-comment" id="status">starting…</div>
+  </div>
+  <div id="log"></div>
+</main>
+<script type="module">
+// The WebLLM build is loaded from a CDN by default. To run fully
+// offline, self-host the bundle and point this import at it.
+import * as webllm from "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.79/lib/index.js";
+
+const MODEL = "__WEBLLM_MODEL__";
+const status = (msg) => { document.getElementById("status").textContent = msg; };
+const log = (msg) => {
+  const d = document.createElement("div");
+  d.className = "bot-comment";
+  d.textContent = msg;
+  document.getElementById("log").prepend(d);
+};
+
+if (!navigator.gpu) {
+  document.getElementById("gpu").textContent = "WebGPU NOT available in this browser";
+  status("WebGPU unavailable — inference cannot run here.");
+  throw new Error("no webgpu");
+}
+document.getElementById("gpu").textContent = "WebGPU available";
+
+let engine = null;
+async function ensureEngine() {
+  if (engine) return engine;
+  status("loading model into VRAM…");
+  engine = await webllm.CreateMLCEngine(MODEL, {
+    initProgressCallback: (p) => status(`loading: ${p.text}`),
+  });
+  status("model resident in VRAM — waiting for jobs");
+  log(`engine ready: ${MODEL}`);
+  return engine;
+}
+
+async function runJob(job) {
+  const eng = await ensureEngine();
+  status(`job ${job.id}: generating…`);
+  const reply = await eng.chat.completions.create({
+    messages: [
+      { role: "system", content: job.system },
+      { role: "user", content: job.user },
+    ],
+    temperature: 0,
+  });
+  const content = reply.choices[0].message.content;
+  await fetch("/infer/result", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: job.id, content }),
+  });
+  log(`job ${job.id}: ${content.length} chars returned to the daemon`);
+  status("model resident in VRAM — waiting for jobs");
+}
+
+async function loop() {
+  status("polling the daemon for jobs…");
+  for (;;) {
+    try {
+      const res = await fetch("/infer/next");
+      if (res.status === 200) {
+        const job = await res.json();
+        try {
+          await runJob(job);
+        } catch (e) {
+          await fetch("/infer/result", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: job.id, error: String(e) }),
+          });
+          log(`job ${job.id}: ERROR ${e}`);
+        }
+      }
+    } catch (e) {
+      status(`daemon unreachable (${e}) — retrying`);
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+loop();
+</script>
+</body>
+</html>

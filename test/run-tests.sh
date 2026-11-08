@@ -13,7 +13,7 @@ PORT=8891
 MPORT=8892
 pass=0; fail=0
 ok() { if [ "$1" = 0 ]; then echo "  PASS  $2"; pass=$((pass+1)); else echo "  FAIL  $2"; fail=$((fail+1)); fi }
-cleanup() { kill $DPID $MPID 2>/dev/null; }
+cleanup() { kill $DPID $MPID $WPID $SPID 2>/dev/null; }
 trap cleanup EXIT
 
 [ -x "$BIN" ] || { export RUSTUP_HOME=$HOME/workspace/.tools/rustup CARGO_HOME=$HOME/workspace/.tools/cargo PATH=$HOME/workspace/.tools/cargo/bin:$PATH; cargo build --release > /dev/null 2>&1; }
@@ -90,6 +90,22 @@ good=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8893/webh
 bad=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8893/webhook -H "X-GitHub-Event: ping" -H "X-Hub-Signature-256: sha256=deadbeef" --data-binary @fixtures/ping.json)
 kill $SPID 2>/dev/null
 [ "$good" = 200 ] && [ "$bad" = 401 ]; ok $? "webhook HMAC: good signature 200, forged 401"
+
+# --- WebGPU backend: the same loop through the browser channel ------
+sed "s/port = $PORT/port = 8894/; s|workdir = $W/runs|workdir = $W/runs-web|; s|ledger_path = $W/ledger.log|ledger_path = $W/ledger-web.log|" "$W/conf" > "$W/conf-web"
+printf 'model_backend = webllm\nwebllm_model = TestModel-MLC\ninfer_timeout_secs = 60\n' >> "$W/conf-web"
+"$BIN" "$W/conf-web" > "$W/daemon-web.log" 2>&1 & WPID=$!
+i=0; while [ $i -lt 20 ]; do curl -s "http://127.0.0.1:8894/health" > /dev/null 2>&1 && break; i=$((i+1)); sleep 0.3; done
+curl -s "http://127.0.0.1:8894/infer" | grep -q "TestModel-MLC"; ok $? "inference page served with the configured model id"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8894/webhook" -H "X-GitHub-Event: issue_comment" --data-binary @"$W/issue.json")
+python3 test/fake_browser.py http://127.0.0.1:8894 > "$W/browser.log" 2>&1
+grep -q "answered job" "$W/browser.log"; ok $? "browser channel: job claimed and answered by the page role"
+i=0; while [ $i -lt 40 ]; do grep -q "completed" "$W/ledger-web.log" 2>/dev/null && break; i=$((i+1)); sleep 0.5; done
+grep -q "completed.*PR dry-run" "$W/ledger-web.log"; ok $? "webllm backend: full pipeline completed via the browser channel"
+kill $WPID 2>/dev/null
+
+# --- edge worker ------------------------------------------------------
+node test/worker_harness.mjs > /dev/null 2>&1; ok $? "edge worker: verify, scrub, re-sign, forward"
 
 echo "tests: $pass passed, $fail failed"
 [ "$fail" = 0 ]

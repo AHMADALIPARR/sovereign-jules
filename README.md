@@ -12,7 +12,9 @@ Google's Jules is proprietary, cloud-hosted, and now winding down. Its architect
 
 ## The original Google Jules
 
-Jules (Google Labs) launched in public beta on 19 May 2025 as an asynchronous coding agent that clones a repository into a cloud VM, understands the codebase, works autonomously on a task (bug fix, feature, tests, dependency bump), and opens a pull request. It exited beta in August 2025, powered by Gemini 2.5 Pro, with structured pricing tiers and deeper GitHub / CLI integration.
+![Legacy Google Jules interface](https://techcrunch.com/wp-content/uploads/2025/08/google-jules.jpg)
+
+Jules (Google Labs) launched in public beta on 19 May 2025 as an asynchronous coding agent that clones a repository into a cloud VM, understands the codebase, works autonomously on a task (bug fix, feature, tests, dependency bump), and opens a pull request. It exited beta in August 2025, powered by Gemini 2.5 Pro, with structured pricing tiers and deeper GitHub / CLI integration. The purple octopus mark and dark interface became its signature look.
 
 On 29 October 2026 Google announced Jules would wind down. Existing sessions become read-only on 11 November 2026; the service shuts completely on 31 December 2026. Learnings are being folded into the Antigravity project. Users can export sessions, memories, environment snapshots, and related state before the cutoff.
 
@@ -35,9 +37,30 @@ The goal is not a clone of a cloud service. It is the same loop, under the opera
 
 `jules` `google-jules` `asynchronous-agent` `coding-agent` `sovereign` `rust` `webgpu` `webllm` `hash-chain` `tool-discovery` `mcp` `github-app` `ephemeral-sandbox`
 
-## Ingress — the edge route
+## Webhook — how it works
 
-GitHub does not talk to the daemon directly. Deliveries land on `edge/worker.js`, a Cloudflare Worker that **verifies** GitHub's HMAC at the edge, **scrubs** the payload down to the fields the daemon reads (installation metadata, sender objects, and the rest of the tail are dropped at the edge, not at the house), and **forwards** the scrubbed body to the daemon re-signed with a daemon secret, so the daemon's own HMAC check verifies exactly what it receives. See `edge/wrangler.toml.example`.
+GitHub never talks to the daemon directly. Deliveries hit `edge/worker.js` (Cloudflare Worker) first.
+
+1. **Verify.** The worker checks the `X-Hub-Signature-256` HMAC-SHA256 against `WEBHOOK_SECRET`. A forged or missing signature is rejected with 401 at the edge and never forwarded.
+2. **Scrub.** The payload is reduced to only the fields the daemon needs:
+   - `action`, `ref`
+   - `repository.full_name`, `clone_url`, `default_branch`
+   - if present: `issue.number`, `issue.title`
+   - if present: `comment.body`, `comment.user.login`
+   Installation metadata, sender objects, URLs, and the rest of the GitHub tail are dropped on the edge, not inside the house.
+3. **Forward.** The scrubbed JSON is re-signed with `DAEMON_SECRET` and POSTed to the daemon (`DAEMON_URL`). The daemon's own HMAC check therefore verifies exactly the body it receives.
+
+The GitHub App is configured for `issue_comment` and `push` events. See `edge/wrangler.toml.example` for the Worker variables and secrets.
+
+## Triggers
+
+A task starts when an `issue_comment` delivery arrives whose body contains the configured bot mention (`@<bot_name>` from the config).
+
+- The daemon extracts the repository, the branch (from the issue or default), and the prompt text that follows the mention.
+- Comments that do not contain the trigger do nothing.
+- A `push` event can also be used for other orchestration paths; the primary user-facing trigger is the mention in a comment.
+
+The full extraction and sandbox hand-off is in the daemon; the edge only delivers the scrubbed, verified payload.
 
 ## The cognitive engine — WebGPU
 
@@ -48,7 +71,7 @@ Two model backends, one seam (`model_backend`):
 
 ## The loop
 
-1. **Ingestion.** A GitHub App (Contents, Pull Requests, Issues: read/write; `issue_comment` and `push` events) points its webhook at the daemon. With `webhook_secret` set, deliveries must carry a valid `X-Hub-Signature-256` HMAC or they are refused with 401.
+1. **Ingestion.** A GitHub App (Contents, Pull Requests, Issues: read/write; `issue_comment` and `push` events) points its webhook at the edge Worker. With secrets set, deliveries must carry a valid HMAC or they are refused.
 2. **Trigger.** A comment mentioning `@<bot_name>` starts a task: the daemon extracts the repository, branch, and prompt.
 3. **Sandbox.** The repository is cloned into an ephemeral work directory for this task alone.
 4. **Discovery.** The task prompt is matched against the Tool Discovery Engine's sealed registry; the model receives the candidate tools for this task — not a preloaded catalogue.

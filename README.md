@@ -41,6 +41,23 @@ The goal is not a clone of a cloud service. It is the same loop, under the opera
 
 GitHub never talks to the daemon directly. Deliveries hit `edge/worker.js` (Cloudflare Worker) first.
 
+```mermaid
+flowchart TD
+    GH["GitHub App<br/>issue_comment / push"] -->|"POST webhook<br/>X-Hub-Signature-256"| Edge["Cloudflare Worker<br/>edge/worker.js"]
+    Edge --> V{"HMAC valid?<br/>WEBHOOK_SECRET"}
+    V -->|No| Reject["401 rejected<br/>never forwarded"]
+    V -->|Yes| Scrub["Scrub payload<br/>keep only action, ref,<br/>repo essentials,<br/>issue / comment fields"]
+    Scrub --> Resign["Re-sign body<br/>DAEMON_SECRET"]
+    Resign -->|"POST scrubbed JSON<br/>X-Hub-Signature-256"| Daemon["Sovereign Jules Daemon<br/>DAEMON_URL"]
+    Daemon --> DV{"HMAC valid?<br/>DAEMON_SECRET"}
+    DV -->|No| DReject["refused"]
+    DV -->|Yes| Process["extract trigger<br/>sandbox / model / ledger"]
+
+    style Reject fill:#fdd,stroke:#c00
+    style DReject fill:#fdd,stroke:#c00
+    style Process fill:#dfd,stroke:#0a0
+```
+
 1. **Verify.** The worker checks the `X-Hub-Signature-256` HMAC-SHA256 against `WEBHOOK_SECRET`. A forged or missing signature is rejected with 401 at the edge and never forwarded.
 2. **Scrub.** The payload is reduced to only the fields the daemon needs:
    - `action`, `ref`
